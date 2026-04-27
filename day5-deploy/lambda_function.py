@@ -11,6 +11,13 @@ Setup in AWS Console:
   - Configuration → Environment variables:
       Key:   ENDPOINT_NAME
       Value: mistral-base-v1   (or whatever Step 7 of the notebook printed)
+
+Request contract (from API Gateway → this Lambda):
+  POST body: {"prompt": "<text>", "temperature": <float, optional>}
+
+Response contract (from this Lambda → API Gateway → Streamlit):
+  200: {"generated_text": "<text>"}
+  500: {"error": "<message>"}
 """
 
 import json
@@ -23,12 +30,23 @@ runtime = boto3.client("sagemaker-runtime")
 # Read endpoint name from env var so you can swap endpoints without redeploying
 ENDPOINT = os.environ["ENDPOINT_NAME"]
 
+# Sensible default if the caller doesn't pass temperature
+DEFAULT_TEMPERATURE = 0.7
+
+# Hard caps on temperature to prevent abusive/garbage-producing values
+MIN_TEMPERATURE = 0.0
+MAX_TEMPERATURE = 1.5
+
 
 def lambda_handler(event, context):
     try:
         # API Gateway wraps the request body as a JSON string
         body = json.loads(event["body"])
         prompt = body["prompt"]
+
+        # Read temperature from the request, fall back to default, clamp to safe range
+        temperature = float(body.get("temperature", DEFAULT_TEMPERATURE))
+        temperature = max(MIN_TEMPERATURE, min(MAX_TEMPERATURE, temperature))
 
         # Mistral-7B-Instruct's trained prompt format
         wrapped = f"<s>[INST] {prompt} [/INST]"
@@ -37,7 +55,7 @@ def lambda_handler(event, context):
             "inputs": wrapped,
             "parameters": {
                 "max_new_tokens": 512,
-                "temperature": 0.7,
+                "temperature": temperature,
                 "do_sample": True,
                 "repetition_penalty": 1.03,
                 "return_full_text": False,
